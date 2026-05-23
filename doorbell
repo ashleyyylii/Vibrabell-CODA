@@ -1,0 +1,83 @@
+import aioble
+import bluetooth
+import asyncio
+from machine import Pin
+
+# Hardware setup
+button = Pin(22, Pin.IN, Pin.PULL_UP)
+
+# BLE Target Details (must match the XIAO exactly)
+_TARGET_NAME = "XIAO-VIBE"
+_SERVICE_UUID = bluetooth.UUID(0x180A)
+_CHAR_UUID = bluetooth.UUID(0x2A57)
+
+async def scan_and_connect():
+    print(f"Scanning for {_TARGET_NAME}...")
+    # Scan for 5 seconds
+    async with aioble.scan(5000, interval_us=30000, window_us=30000, active=True) as scanner:
+        async for result in scanner:
+            if result.name() == _TARGET_NAME:
+                print(f"Found {_TARGET_NAME}, connecting...")
+                try:
+                    connection = await result.device.connect(timeout_ms=5000)
+                    print("Connected!")
+                    return connection
+                except asyncio.TimeoutError:
+                    print("Connection timed out.")
+                    return None
+    print("Device not found. Retrying...")
+    return None
+
+async def button_task(characteristic, connection):
+    last_state = 1
+    debounce_delay_ms = 40
+    
+    print("Ready to send commands. Press the button.")
+    
+    while connection.is_connected():
+        raw_state = button.value()
+        
+        if raw_state != last_state:
+            await asyncio.sleep_ms(debounce_delay_ms) # Debounce pause
+            
+            if button.value() == raw_state:
+                last_state = raw_state
+                
+                # Button is pressed (LOW)
+                if raw_state == 0:
+                    print("Button pressed! Sending trigger.")
+                    try:
+                        # Write the string "1" to the characteristic
+                        await characteristic.write(b"1")
+                    except Exception as e:
+                        print("Failed to send command:", e)
+                        break # Break out to trigger a reconnect
+                        
+        await asyncio.sleep_ms(10) # Small delay to prevent CPU hogging
+
+async def main():
+    while True:
+        connection = await scan_and_connect()
+        
+        if not connection:
+            await asyncio.sleep(2)
+            continue
+            
+        try:
+            print("Discovering services...")
+            service = await connection.service(_SERVICE_UUID)
+            characteristic = await service.characteristic(_CHAR_UUID)
+            
+            # Start monitoring the button while connected
+            await button_task(characteristic, connection)
+                
+        except aioble.DeviceDisconnectedError:
+            print("Device disconnected.")
+        except asyncio.TimeoutError:
+            print("Timeout during discovery.")
+        finally:
+            if connection and connection.is_connected():
+                await connection.disconnect()
+
+# Start the asynchronous event loop
+asyncio.run(main())

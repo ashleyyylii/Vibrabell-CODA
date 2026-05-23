@@ -1,0 +1,102 @@
+#include <ArduinoBLE.h>
+
+BLEService motorService("19B10000-E8F2-537E-4F6C-D104768A1214");
+
+BLEByteCharacteristic motorCharacteristic(
+  "19B10001-E8F2-537E-4F6C-D104768A1214",
+  BLERead | BLEWrite
+);
+
+const int motorPin = D2;
+const int ledPin = LED_BUILTIN;
+
+// Timing settings
+const unsigned long motorOnTime = 1200;   // motor stays on for 1.2 seconds
+const unsigned long cooldownTime = 800;   // ignore extra presses for 0.8 seconds after
+
+bool motorActive = false;
+unsigned long motorStartTime = 0;
+unsigned long lastMotorEndTime = 0;
+
+void setup() {
+  Serial.begin(9600);
+  delay(1500);
+
+  pinMode(motorPin, OUTPUT);
+  digitalWrite(motorPin, LOW); // motor off
+
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, HIGH); // LED off, active LOW
+
+  if (!BLE.begin()) {
+    Serial.println("BLE failed to start");
+    while (1);
+  }
+
+  BLE.setLocalName("XIAO_MOTOR");
+  BLE.setDeviceName("XIAO_MOTOR");
+  BLE.setAdvertisedService(motorService);
+
+  motorService.addCharacteristic(motorCharacteristic);
+  BLE.addService(motorService);
+
+  motorCharacteristic.writeValue(0);
+
+  BLE.advertise();
+
+  Serial.println("Peripheral ready. Advertising as XIAO_MOTOR...");
+}
+
+void loop() {
+  BLEDevice central = BLE.central();
+
+  if (central) {
+    Serial.print("Connected to central: ");
+    Serial.println(central.address());
+
+    while (central.connected()) {
+      unsigned long now = millis();
+
+      // Check if BLE sent a command
+      if (motorCharacteristic.written()) {
+        byte value = motorCharacteristic.value();
+
+        Serial.print("Received value: ");
+        Serial.println(value);
+
+        if (value == 1) {
+          // Only start motor if it is not already active
+          // and cooldown has passed
+          if (!motorActive && (now - lastMotorEndTime >= cooldownTime)) {
+            Serial.println("Starting vibration");
+
+            motorActive = true;
+            motorStartTime = now;
+
+            digitalWrite(motorPin, HIGH); // motor on
+            digitalWrite(ledPin, LOW);    // LED on
+          } else {
+            Serial.println("Ignored extra press");
+          }
+        }
+      }
+
+      // Turn motor off after motorOnTime
+      if (motorActive && (now - motorStartTime >= motorOnTime)) {
+        Serial.println("Stopping vibration");
+
+        motorActive = false;
+        lastMotorEndTime = now;
+
+        digitalWrite(motorPin, LOW); // motor off
+        digitalWrite(ledPin, HIGH);  // LED off
+      }
+    }
+
+    Serial.println("Central disconnected");
+
+    motorActive = false;
+    digitalWrite(motorPin, LOW);
+    digitalWrite(ledPin, HIGH);
+  }
+}
